@@ -1,4 +1,4 @@
-FROM alpine:3 AS build-env
+FROM alpine:3@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1 AS build-env
 
 RUN apk add --update --no-cache \
   automake \
@@ -16,25 +16,29 @@ RUN apk add --update --no-cache \
   make \
   wget
 
-# Build minimal busybox
+# Build minimal busybox from S3-hosted source
 WORKDIR /
-# busybox v1.34.1 stable
-RUN git clone -b 1_34_1 --single-branch https://git.busybox.net/busybox
+RUN wget -O - https://ondo-infra-toolkit-dependencies.s3.us-east-1.amazonaws.com/sources/busybox-1.34.1.tar.bz2 | tar -xjv && \
+    mv busybox-1.34.1 busybox
+
 WORKDIR /busybox
 ADD busybox.min.config .config
 RUN make
 
-# Static jq
+# Build static jq from S3-hosted source
 WORKDIR /
-RUN git clone --recursive -b jq-1.6 --single-branch https://github.com/stedolan/jq.git
+RUN wget -O - https://ondo-infra-toolkit-dependencies.s3.us-east-1.amazonaws.com/sources/jq-1.6.tar.gz | tar -xzv && \
+    mv jq-1.6 jq
+
 WORKDIR /jq
 RUN autoreconf -fi;\
   ./configure --with-oniguruma=builtin;\
   make LDFLAGS=-all-static
 
+# Todo (Zakariaa): Figure out suitable/correct sha
 FROM boxboat/config-merge:latest as config-merge
 
-FROM alpine:3
+FROM alpine:3@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
 
 RUN apk add --no-cache \
   curl \
