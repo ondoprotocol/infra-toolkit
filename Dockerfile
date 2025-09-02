@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM alpine:3 AS build-env
+FROM --platform=$BUILDPLATFORM alpine:3@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1 AS build-env
 
 RUN apk add --update --no-cache \
   automake \
@@ -19,27 +19,43 @@ RUN apk add --update --no-cache \
 ARG TARGETARCH
 ARG BUILDARCH
 
+# Checksums for S3-hosted dependencies - replace with actual values from checksums.txt
+ARG AARCH64_TOOLCHAIN_SHA256="c909817856d6ceda86aa510894fa3527eac7989f0ef6e87b5721c58737a06c38"
+ARG X86_64_TOOLCHAIN_SHA256="c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea"
+ARG BUSYBOX_SHA256="415fbd89e5344c96acf449d94a6f956dbed62e18e835fc83e064db33a34bd549"
+ARG JQ_SHA256="5de8c8e29aaa3fb9cc6b47bb27299f271354ebb72514e3accadc7d38b5bbaa72"
+
 RUN LIBDIR=/lib; \
     if [ "${TARGETARCH}" = "arm64" ]; then \
       ARCH=aarch64; \
       if [ "${BUILDARCH}" != "arm64" ]; then \
-        wget -c https://musl.cc/aarch64-linux-musl-cross.tgz -O - | tar -xzvv --strip-components 1 -C /usr; \
+        wget -O /tmp/toolchain.tgz https://ondo-infra-toolkit-dependencies.s3.us-east-1.amazonaws.com/toolchains/aarch64-linux-musl-cross.tgz && \
+        echo "${AARCH64_TOOLCHAIN_SHA256} /tmp/toolchain.tgz" | sha256sum -c && \
+        tar -xzf /tmp/toolchain.tgz --strip-components 1 -C /usr && \
+        rm /tmp/toolchain.tgz; \
         LIBDIR=/usr/aarch64-linux-musl/lib; \
         mkdir -p $LIBDIR; \
       fi; \
     elif [ "${TARGETARCH}" = "amd64" ]; then \
       ARCH=x86_64; \
       if [ "${BUILDARCH}" != "amd64" ]; then \
-        wget -c https://musl.cc/x86_64-linux-musl-cross.tgz -O - | tar -xzvv --strip-components 1 -C /usr; \
+        wget -O /tmp/toolchain.tgz https://ondo-infra-toolkit-dependencies.s3.us-east-1.amazonaws.com/toolchains/x86_64-linux-musl-cross.tgz && \
+        echo "${X86_64_TOOLCHAIN_SHA256} /tmp/toolchain.tgz" | sha256sum -c && \
+        tar -xzf /tmp/toolchain.tgz --strip-components 1 -C /usr && \
+        rm /tmp/toolchain.tgz; \
         LIBDIR=/usr/x86_64-linux-musl/lib; \
         mkdir -p $LIBDIR; \
       fi; \
     fi;
 
-# Build minimal busybox
+# Build minimal busybox from S3-hosted source
 WORKDIR /
-# busybox v1.34.1 stable
-RUN git clone -b 1_34_1 --single-branch https://git.busybox.net/busybox
+RUN wget -O /tmp/busybox.tar.bz2 https://ondo-infra-toolkit-dependencies.s3.us-east-1.amazonaws.com/sources/busybox-1.34.1.tar.bz2 && \
+    echo "${BUSYBOX_SHA256} /tmp/busybox.tar.bz2" | sha256sum -c && \
+    tar -xjf /tmp/busybox.tar.bz2 && \
+    mv busybox-1.34.1 busybox && \
+    rm /tmp/busybox.tar.bz2
+
 WORKDIR /busybox
 ADD busybox.min.config .config
 RUN if [ "${TARGETARCH}" = "arm64" ] && [ "${BUILDARCH}" != "arm64" ]; then \
@@ -49,17 +65,22 @@ RUN if [ "${TARGETARCH}" = "arm64" ] && [ "${BUILDARCH}" != "arm64" ]; then \
     fi; \
     make
 
-# Static jq
+# Build static jq from S3-hosted source
 WORKDIR /
-RUN git clone --recursive -b jq-1.6 --single-branch https://github.com/stedolan/jq.git
+RUN wget -O /tmp/jq.tar.gz https://ondo-infra-toolkit-dependencies.s3.us-east-1.amazonaws.com/sources/jq-1.6.tar.gz && \
+    echo "${JQ_SHA256} /tmp/jq.tar.gz" | sha256sum -c && \
+    tar -xzf /tmp/jq.tar.gz && \
+    mv jq-1.6 jq && \
+    rm /tmp/jq.tar.gz
+
 WORKDIR /jq
 RUN autoreconf -fi;\
   ./configure --with-oniguruma=builtin;\
   make LDFLAGS=-all-static
 
-FROM boxboat/config-merge:0.2.1 as config-merge
+FROM boxboat/config-merge:0.2.1@sha256:8add6e5045f6a06745af97f8ed639bba1dfab5f231f9f2faa997de222403513b as config-merge
 
-FROM alpine:3
+FROM alpine:3@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
 
 RUN apk add --no-cache \
   curl \
@@ -84,11 +105,7 @@ COPY --from=config-merge /usr/local/config-merge /usr/local/config-merge
 COPY --from=config-merge /usr/local/bin/config-merge /usr/local/bin/config-merge
 COPY --from=config-merge /usr/local/bin/envsubst /usr/local/bin/envsubst
 
-# Add dasel.
-# The dasel repository does not post checksums of the published binaries,
-# so use hardcoded binaries in order to avoid potential supply chain attacks.
-# Note, dasel does publish docker images, but only for amd64,
-# so we cannot copy the binary out like we do for config-merge.
+# Add dasel
 RUN if [ "$(uname -m)" = "aarch64" ]; then \
       ARCH=arm64 DASELSUM="8e1f95b5f361f68ed8376d5a9593ae4249e28153a05b26f1f99f9466efeac5c9  /usr/local/bin/dasel"; \
     else \
